@@ -2,7 +2,8 @@
 <html lang="tr">
   <head>
     <!-- Uygulama kabuğu: telefona/PC'ye kurulabilen küçük bir sayfa.
-         Asıl takvim Google Apps Script'te çalışır; bu sayfa onu tam ekran gösterir. -->
+         Asıl takvim Google Apps Script'te çalışır; bu sayfa onu tam ekran gösterir.
+         İnternet yokken, en son kaydedilen 2 haftalık programı kendisi gösterir. -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0f1115" />
@@ -11,11 +12,34 @@
     <link rel="apple-touch-icon" href="icon-192.png" />
     <title>Takvim</title>
     <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f1115;
+        --surface: #181b22;
+        --border: #2a2f3a;
+        --text: #e6e8ee;
+        --muted: #8a91a0;
+        --accent: #4f8cff;
+        --chip-bg: #1e3466;
+        --chip-text: #cfe0ff;
+        --fixed-bg: #173d2e;
+        --fixed-text: #c9f2dc;
+        --fixed-border: #3ecf8e;
+        --warning: #f5c542;
+      }
+
       html,
       body {
         margin: 0;
         height: 100%;
-        background: #0f1115;
+        background: var(--bg);
+        color: var(--text);
+        font-family: system-ui, sans-serif;
+      }
+
+      /* "hidden" verilen öğe her zaman gizlensin (aşağıdaki display kuralları bunu ezmesin) */
+      [hidden] {
+        display: none !important;
       }
 
       iframe {
@@ -24,14 +48,213 @@
         height: 100%;
         border: none;
       }
+
+      #offline-view {
+        max-width: 700px;
+        margin: 0 auto;
+        padding: 12px;
+      }
+
+      #offline-banner {
+        padding: 8px 12px;
+        margin-bottom: 12px;
+        border-radius: 6px;
+        background: var(--surface);
+        color: var(--warning);
+        font-size: 14px;
+      }
+
+      #offline-banner button {
+        margin-left: 8px;
+        padding: 4px 10px;
+        font-size: 14px;
+        border: none;
+        border-radius: 4px;
+        background: var(--accent);
+        color: white;
+      }
+
+      .day {
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border-radius: 6px;
+        background: var(--surface);
+      }
+
+      .day h2 {
+        margin: 0 0 6px;
+        font-size: 16px;
+      }
+
+      .event {
+        margin-bottom: 4px;
+        padding: 6px 8px;
+        border-left: 3px solid var(--accent);
+        border-radius: 3px;
+        background: var(--chip-bg);
+        color: var(--chip-text);
+        font-size: 14px;
+      }
+
+      .event.fixed {
+        border-left-color: var(--fixed-border);
+        background: var(--fixed-bg);
+        color: var(--fixed-text);
+      }
+
+      .event-location {
+        font-size: 12px;
+        opacity: 0.7;
+      }
+
+      .empty {
+        color: var(--muted);
+        font-size: 14px;
+      }
     </style>
   </head>
   <body>
-    <iframe
-      src="https://script.google.com/macros/s/AKfycby50x0Vt5CeK05aWlG4DMfYQS1n_OKbhoLY_f14WQXkPHhXibJt4gtYxl1vLg_6NMxC/exec"
-      title="Takvim"
-    ></iframe>
+    <iframe id="calendar-frame" title="Takvim"></iframe>
+
+    <div id="offline-view" hidden>
+      <div id="offline-banner"></div>
+      <div id="offline-days"></div>
+    </div>
+
     <script>
+      const APP_URL =
+        "https://script.google.com/macros/s/AKfycby50x0Vt5CeK05aWlG4DMfYQS1n_OKbhoLY_f14WQXkPHhXibJt4gtYxl1vLg_6NMxC/exec";
+      const STORAGE_KEY = "takvim-offline-copy";
+      const OFFLINE_DAYS = 14;
+      // Takvim bu süre içinde veri göndermezse bağlantı yok sayılır ve kayıtlı kopya gösterilir
+      const WAIT_FOR_CALENDAR_MS = 20000;
+
+      const frame = document.getElementById("calendar-frame");
+      const offlineView = document.getElementById("offline-view");
+      const banner = document.getElementById("offline-banner");
+      const daysBox = document.getElementById("offline-days");
+
+      let waitTimer = null;
+
+      function toDateText(date) {
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return date.getFullYear() + "-" + month + "-" + day;
+      }
+
+      function addDays(date, count) {
+        const result = new Date(date);
+        result.setDate(result.getDate() + count);
+        return result;
+      }
+
+      function loadCopy() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY));
+        } catch (error) {
+          return null;
+        }
+      }
+
+      // Bir etkinlik o günde var mı? (Birkaç gün süren tüm gün etkinlikleri her güne düşer)
+      function isOnDay(event, dateText) {
+        if (event.allDay) return event.start <= dateText && dateText < event.end;
+        return event.start === dateText;
+      }
+
+      function renderEvent(event) {
+        const box = document.createElement("div");
+        box.className = event.fixed ? "event fixed" : "event";
+        const time = event.allDay ? "Tüm gün" : event.time + "–" + (event.endsLater ? "…" : event.endTime);
+        box.textContent = time + "  " + event.title;
+        if (event.location) {
+          const location = document.createElement("div");
+          location.className = "event-location";
+          location.textContent = event.location;
+          box.appendChild(location);
+        }
+        return box;
+      }
+
+      function renderOfflineView() {
+        const copy = loadCopy();
+        daysBox.innerHTML = "";
+
+        if (!copy) {
+          banner.textContent = "İnternet yok ve henüz kaydedilmiş program yok. Bağlanınca 2 hafta otomatik indirilir.";
+        } else {
+          const savedAt = new Date(copy.savedAt).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" });
+          banner.textContent = "Çevrimdışı — son güncelleme: " + savedAt + ". Sadece görüntüleme.";
+        }
+        const retry = document.createElement("button");
+        retry.textContent = "Tekrar dene";
+        retry.addEventListener("click", showCalendar);
+        banner.appendChild(retry);
+        if (!copy) return;
+
+        const events = copy.events.slice().sort((a, b) => a.time.localeCompare(b.time));
+        for (let i = 0; i < OFFLINE_DAYS; i++) {
+          const date = addDays(new Date(), i);
+          const dateText = toDateText(date);
+          const dayBox = document.createElement("div");
+          dayBox.className = "day";
+          const title = document.createElement("h2");
+          title.textContent = date.toLocaleDateString("tr-TR", { weekday: "long", day: "numeric", month: "long" });
+          dayBox.appendChild(title);
+
+          const dayEvents = events.filter((event) => isOnDay(event, dateText));
+          if (dayEvents.length === 0) {
+            const empty = document.createElement("div");
+            empty.className = "empty";
+            empty.textContent = "Etkinlik yok.";
+            dayBox.appendChild(empty);
+          }
+          for (const event of dayEvents) dayBox.appendChild(renderEvent(event));
+          daysBox.appendChild(dayBox);
+        }
+      }
+
+      function showOfflineView() {
+        clearTimeout(waitTimer);
+        frame.hidden = true;
+        offlineView.hidden = false;
+        renderOfflineView();
+      }
+
+      // Takvimi (Google'daki asıl uygulamayı) yükler; cevap gelmezse kayıtlı kopyaya geçer.
+      function showCalendar() {
+        if (!navigator.onLine) {
+          showOfflineView();
+          return;
+        }
+        offlineView.hidden = true;
+        frame.hidden = false;
+        frame.src = APP_URL;
+        clearTimeout(waitTimer);
+        waitTimer = setTimeout(showOfflineView, WAIT_FOR_CALENDAR_MS);
+      }
+
+      // Takvim sayfası önümüzdeki 2 haftayı gönderdiğinde sakla
+      window.addEventListener("message", (event) => {
+        if (!event.origin.endsWith(".googleusercontent.com")) return;
+        if (!event.data || event.data.type !== "takvim-offline") return;
+        clearTimeout(waitTimer);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({ events: event.data.events, savedAt: event.data.savedAt }));
+        } catch (error) {
+          // Depolama kapalıysa çevrimdışı kopya olmadan devam et
+        }
+        if (frame.hidden) {
+          offlineView.hidden = true;
+          frame.hidden = false;
+        }
+      });
+
+      window.addEventListener("offline", showOfflineView);
+      window.addEventListener("online", showCalendar);
+
+      showCalendar();
+
       if ("serviceWorker" in navigator) {
         navigator.serviceWorker.register("sw.js");
       }
