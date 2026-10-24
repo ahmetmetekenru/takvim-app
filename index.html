@@ -3,7 +3,8 @@
   <head>
     <!-- Uygulama kabuğu: telefona/PC'ye kurulabilen küçük bir sayfa.
          Asıl takvim Google Apps Script'te çalışır; bu sayfa onu tam ekran gösterir.
-         İnternet yokken, en son kaydedilen 2 haftalık programı kendisi gösterir. -->
+         İnternet yokken en son kaydedilen 2 haftalık programı gösterir ve yeni etkinlik eklemeye izin verir;
+         bunlar internet gelince Google Takvim'e işlenir. -->
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#0f1115" />
@@ -26,6 +27,12 @@
         --fixed-text: #c9f2dc;
         --fixed-border: #3ecf8e;
         --warning: #f5c542;
+        --pending-bg: #3a3218;
+      }
+
+      /* "hidden" verilen öğe her zaman gizlensin (aşağıdaki display kuralları bunu ezmesin) */
+      [hidden] {
+        display: none !important;
       }
 
       html,
@@ -35,11 +42,6 @@
         background: var(--bg);
         color: var(--text);
         font-family: system-ui, sans-serif;
-      }
-
-      /* "hidden" verilen öğe her zaman gizlensin (aşağıdaki display kuralları bunu ezmesin) */
-      [hidden] {
-        display: none !important;
       }
 
       iframe {
@@ -64,14 +66,58 @@
         font-size: 14px;
       }
 
+      button {
+        padding: 8px 12px;
+        font-size: 16px;
+        border: none;
+        border-radius: 6px;
+        background: var(--accent);
+        color: white;
+        cursor: pointer;
+      }
+
       #offline-banner button {
         margin-left: 8px;
         padding: 4px 10px;
         font-size: 14px;
-        border: none;
+      }
+
+      #offline-form {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 12px;
+        padding: 12px;
+        border-radius: 6px;
+        background: var(--surface);
+      }
+
+      #offline-form h2 {
+        width: 100%;
+        margin: 0;
+        font-size: 16px;
+      }
+
+      input,
+      select {
+        font-size: 16px;
+        padding: 8px;
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
         border-radius: 4px;
-        background: var(--accent);
-        color: white;
+      }
+
+      #new-title {
+        flex: 1;
+        min-width: 150px;
+      }
+
+      .weekly-label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--muted);
       }
 
       .day {
@@ -102,7 +148,14 @@
         color: var(--fixed-text);
       }
 
-      .event-location {
+      /* Çevrimdışı eklenen, henüz Google'a gitmemiş etkinlik */
+      .event.pending {
+        border-left-color: var(--warning);
+        background: var(--pending-bg);
+        color: var(--text);
+      }
+
+      .event-note {
         font-size: 12px;
         opacity: 0.7;
       }
@@ -118,21 +171,45 @@
 
     <div id="offline-view" hidden>
       <div id="offline-banner"></div>
+
+      <form id="offline-form">
+        <h2>Etkinlik ekle (internet gelince takvime işlenir)</h2>
+        <input id="new-date" type="date" required />
+        <input id="new-title" type="text" placeholder="Etkinlik adı" required />
+        <input id="new-time" type="time" title="Başlangıç. Boş bırakırsan tüm gün olur" />
+        <input id="new-end-time" type="time" title="Bitiş. Boş bırakırsan 1 saat sürer" />
+        <select id="new-reminder" title="Telefona hatırlatma">
+          <option value="">Hatırlatma: varsayılan</option>
+          <option value="none">Hatırlatma yok</option>
+          <option value="0">Tam vaktinde</option>
+          <option value="5">5 dk önce</option>
+          <option value="10">10 dk önce</option>
+          <option value="15">15 dk önce</option>
+          <option value="30">30 dk önce</option>
+          <option value="60">1 saat önce</option>
+          <option value="1440">1 gün önce</option>
+        </select>
+        <label class="weekly-label"><input id="new-weekly" type="checkbox" /> Her hafta (sabit)</label>
+        <button type="submit">Ekle</button>
+      </form>
+
       <div id="offline-days"></div>
     </div>
 
     <script>
       const APP_URL =
         "https://script.google.com/macros/s/AKfycby50x0Vt5CeK05aWlG4DMfYQS1n_OKbhoLY_f14WQXkPHhXibJt4gtYxl1vLg_6NMxC/exec";
-      const STORAGE_KEY = "takvim-offline-copy";
+      const STORAGE_KEY = "takvim-offline-copy"; // Google'dan gelen son 2 haftalık kopya
+      const PENDING_KEY = "takvim-pending"; // çevrimdışı eklenip henüz gönderilmemiş etkinlikler
       const OFFLINE_DAYS = 14;
-      // Takvim bu süre içinde veri göndermezse bağlantı yok sayılır ve kayıtlı kopya gösterilir
+      // Takvim bu süre içinde cevap vermezse bağlantı yok sayılır ve kayıtlı kopya gösterilir
       const WAIT_FOR_CALENDAR_MS = 20000;
 
       const frame = document.getElementById("calendar-frame");
       const offlineView = document.getElementById("offline-view");
       const banner = document.getElementById("offline-banner");
       const daysBox = document.getElementById("offline-days");
+      const offlineForm = document.getElementById("offline-form");
 
       let waitTimer = null;
 
@@ -142,19 +219,35 @@
         return date.getFullYear() + "-" + month + "-" + day;
       }
 
+      function fromDateText(text) {
+        const [year, month, day] = text.split("-").map(Number);
+        return new Date(year, month - 1, day);
+      }
+
       function addDays(date, count) {
         const result = new Date(date);
         result.setDate(result.getDate() + count);
         return result;
       }
 
-      function loadCopy() {
+      // localStorage kapalı olabilir (gizli sekme vb.), o yüzden okuma/yazma try içinde
+      function readStorage(key, fallback) {
         try {
-          return JSON.parse(localStorage.getItem(STORAGE_KEY));
+          return JSON.parse(localStorage.getItem(key)) || fallback;
         } catch (error) {
-          return null;
+          return fallback;
         }
       }
+
+      function writeStorage(key, value) {
+        try {
+          localStorage.setItem(key, JSON.stringify(value));
+        } catch (error) {
+          // Depolama kapalıysa yapacak bir şey yok
+        }
+      }
+
+      // ---- Takvim kopyasındaki etkinlikler ----
 
       // Bir etkinlik o günde var mı? (Birkaç gün süren tüm gün etkinlikleri her güne düşer)
       function isOnDay(event, dateText) {
@@ -162,37 +255,67 @@
         return event.start === dateText;
       }
 
+      // Bekleyen etkinlik o günde var mı? (Haftalık olanlar aynı gün her hafta tekrarlar)
+      function isPendingOnDay(item, dateText) {
+        if (item.date === dateText) return true;
+        if (!item.weekly || dateText < item.date) return false;
+        return fromDateText(item.date).getDay() === fromDateText(dateText).getDay();
+      }
+
+      function timeLabel(start, end, allDay) {
+        if (allDay) return "Tüm gün";
+        return start + "–" + (end || "");
+      }
+
       function renderEvent(event) {
         const box = document.createElement("div");
         box.className = event.fixed ? "event fixed" : "event";
-        const time = event.allDay ? "Tüm gün" : event.time + "–" + (event.endsLater ? "…" : event.endTime);
-        box.textContent = time + "  " + event.title;
+        box.textContent = timeLabel(event.time, event.endsLater ? "…" : event.endTime, event.allDay) + "  " + event.title;
         if (event.location) {
           const location = document.createElement("div");
-          location.className = "event-location";
+          location.className = "event-note";
           location.textContent = event.location;
           box.appendChild(location);
         }
         return box;
       }
 
-      function renderOfflineView() {
-        const copy = loadCopy();
-        daysBox.innerHTML = "";
+      function renderPendingItem(item) {
+        const box = document.createElement("div");
+        box.className = "event pending";
+        box.textContent = timeLabel(item.time, item.endTime, !item.time) + "  " + item.title;
+        const note = document.createElement("div");
+        note.className = "event-note";
+        note.textContent = "⏳ İnternet gelince takvime eklenecek" + (item.weekly ? " (her hafta)" : "");
+        box.appendChild(note);
+        return box;
+      }
 
+      // ---- Çevrimdışı ekran ----
+
+      function renderBanner(copy, pending) {
         if (!copy) {
           banner.textContent = "İnternet yok ve henüz kaydedilmiş program yok. Bağlanınca 2 hafta otomatik indirilir.";
         } else {
           const savedAt = new Date(copy.savedAt).toLocaleString("tr-TR", { dateStyle: "short", timeStyle: "short" });
-          banner.textContent = "Çevrimdışı — son güncelleme: " + savedAt + ". Sadece görüntüleme.";
+          banner.textContent = "Çevrimdışı — son güncelleme: " + savedAt + ".";
+        }
+        if (pending.length > 0) {
+          banner.textContent += " Gönderilmeyi bekleyen: " + pending.length + ".";
         }
         const retry = document.createElement("button");
         retry.textContent = "Tekrar dene";
         retry.addEventListener("click", showCalendar);
         banner.appendChild(retry);
-        if (!copy) return;
+      }
 
-        const events = copy.events.slice().sort((a, b) => a.time.localeCompare(b.time));
+      function renderOfflineView() {
+        const copy = readStorage(STORAGE_KEY, null);
+        const pending = readStorage(PENDING_KEY, []);
+        renderBanner(copy, pending);
+
+        const events = copy ? copy.events.slice().sort((a, b) => a.time.localeCompare(b.time)) : [];
+        daysBox.innerHTML = "";
         for (let i = 0; i < OFFLINE_DAYS; i++) {
           const date = addDays(new Date(), i);
           const dateText = toDateText(date);
@@ -203,13 +326,15 @@
           dayBox.appendChild(title);
 
           const dayEvents = events.filter((event) => isOnDay(event, dateText));
-          if (dayEvents.length === 0) {
+          const dayPending = pending.filter((item) => isPendingOnDay(item, dateText));
+          if (dayEvents.length === 0 && dayPending.length === 0) {
             const empty = document.createElement("div");
             empty.className = "empty";
             empty.textContent = "Etkinlik yok.";
             dayBox.appendChild(empty);
           }
           for (const event of dayEvents) dayBox.appendChild(renderEvent(event));
+          for (const item of dayPending) dayBox.appendChild(renderPendingItem(item));
           daysBox.appendChild(dayBox);
         }
       }
@@ -221,7 +346,34 @@
         renderOfflineView();
       }
 
-      // Takvimi (Google'daki asıl uygulamayı) yükler; cevap gelmezse kayıtlı kopyaya geçer.
+      // Çevrimdışı formdan gelen etkinliği bekleyenler listesine ekler.
+      // Alanlar Google'daki addEvent'in beklediğiyle aynı; id aynı etkinliğin iki kez eklenmesini önler.
+      offlineForm.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const time = document.getElementById("new-time").value;
+        const item = {
+          id: Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+          date: document.getElementById("new-date").value,
+          title: document.getElementById("new-title").value.trim(),
+          time: time,
+          endTime: time ? document.getElementById("new-end-time").value : "",
+          reminder: time ? document.getElementById("new-reminder").value : "",
+          weekly: document.getElementById("new-weekly").checked,
+        };
+        const pending = readStorage(PENDING_KEY, []);
+        pending.push(item);
+        writeStorage(PENDING_KEY, pending);
+
+        document.getElementById("new-title").value = "";
+        document.getElementById("new-time").value = "";
+        document.getElementById("new-end-time").value = "";
+        document.getElementById("new-weekly").checked = false;
+        renderOfflineView();
+      });
+
+      // ---- Asıl takvim (Google) ----
+
+      // Takvimi yükler; cevap gelmezse kayıtlı kopyaya geçer.
       function showCalendar() {
         if (!navigator.onLine) {
           showOfflineView();
@@ -234,25 +386,43 @@
         waitTimer = setTimeout(showOfflineView, WAIT_FOR_CALENDAR_MS);
       }
 
-      // Takvim sayfası önümüzdeki 2 haftayı gönderdiğinde sakla
-      window.addEventListener("message", (event) => {
-        if (!event.origin.endsWith(".googleusercontent.com")) return;
-        if (!event.data || event.data.type !== "takvim-offline") return;
+      // Takvimden cevap geldi: internet var, takvimi göster
+      function calendarIsUp() {
         clearTimeout(waitTimer);
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify({ events: event.data.events, savedAt: event.data.savedAt }));
-        } catch (error) {
-          // Depolama kapalıysa çevrimdışı kopya olmadan devam et
+        offlineView.hidden = true;
+        frame.hidden = false;
+      }
+
+      // Takvim sayfasıyla (Google'daki iframe) haberleşme
+      window.addEventListener("message", (event) => {
+        if (!event.origin.endsWith(".googleusercontent.com") || !event.data) return;
+
+        if (event.data.type === "takvim-ready") {
+          // Takvim açıldı; bekleyen etkinlik varsa işlesin diye gönder
+          calendarIsUp();
+          const pending = readStorage(PENDING_KEY, []);
+          if (pending.length > 0) {
+            event.source.postMessage({ type: "takvim-pending", items: pending }, event.origin);
+          }
         }
-        if (frame.hidden) {
-          offlineView.hidden = true;
-          frame.hidden = false;
+
+        if (event.data.type === "takvim-synced") {
+          // İşlenenleri bekleyenler listesinden çıkar
+          const pending = readStorage(PENDING_KEY, []);
+          writeStorage(PENDING_KEY, pending.filter((item) => !event.data.ids.includes(item.id)));
+        }
+
+        if (event.data.type === "takvim-offline") {
+          // Önümüzdeki 2 haftanın kopyasını sakla
+          calendarIsUp();
+          writeStorage(STORAGE_KEY, { events: event.data.events, savedAt: event.data.savedAt });
         }
       });
 
       window.addEventListener("offline", showOfflineView);
       window.addEventListener("online", showCalendar);
 
+      document.getElementById("new-date").value = toDateText(new Date());
       showCalendar();
 
       if ("serviceWorker" in navigator) {

@@ -1,7 +1,7 @@
 // Kabuğun service worker'ı: kabuk dosyalarını cihazda saklar, böylece uygulama internetsiz de açılır.
 // Takvim verisi burada saklanmaz; onu index.html kendisi (localStorage'da) tutar.
 // Kabuk dosyalarını değiştirince CACHE_NAME'i artır (v3, v4...) ki eski kopyalar silinsin.
-const CACHE_NAME = "takvim-app-v2";
+const CACHE_NAME = "takvim-app-v3";
 const SHELL_FILES = ["./", "index.html", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 
 // Kurulurken kabuk dosyalarını hemen sakla (ilk açılıştan sonra internetsiz de açılsın)
