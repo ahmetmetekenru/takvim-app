@@ -28,6 +28,9 @@
         --fixed-border: #3ecf8e;
         --warning: #f5c542;
         --pending-bg: #3a3218;
+        --routine-bg: #22252d;
+        --routine-text: #b8bfcc;
+        --routine-border: #6b7280;
       }
 
       /* "hidden" verilen öğe her zaman gizlensin (aşağıdaki display kuralları bunu ezmesin) */
@@ -146,6 +149,12 @@
         border-left-color: var(--fixed-border);
         background: var(--fixed-bg);
         color: var(--fixed-text);
+      }
+
+      .event.routine {
+        border-left-color: var(--routine-border);
+        background: var(--routine-bg);
+        color: var(--routine-text);
       }
 
       /* Çevrimdışı eklenen, henüz Google'a gitmemiş etkinlik */
@@ -269,7 +278,9 @@
 
       function renderEvent(event) {
         const box = document.createElement("div");
-        box.className = event.fixed ? "event fixed" : "event";
+        box.className = "event";
+        if (event.fixed) box.classList.add("fixed");
+        if (event.routine) box.classList.add("routine");
         box.textContent = timeLabel(event.time, event.endsLater ? "…" : event.endTime, event.allDay) + "  " + event.title;
         if (event.location) {
           const location = document.createElement("div");
