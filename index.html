@@ -460,8 +460,7 @@
       }
 
       function showNotification(event) {
-        const body = event.time + "–" + (event.endsLater ? "…" : event.endTime) + (event.location ? "
-" + event.location : "");
+        const body = event.time + "–" + (event.endsLater ? "…" : event.endTime) + (event.location ? " · " + event.location : "");
         const notification = new Notification(event.title, { body: body, icon: "icon-192.png", tag: event.start + event.time + event.title });
         notification.addEventListener("click", () => window.focus());
       }
