@@ -173,6 +173,14 @@
         color: var(--muted);
         font-size: 14px;
       }
+
+      /* PC'de bildirim izni henüz verilmediyse sağ altta duran düğme */
+      #notify-button {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+      }
     </style>
   </head>
   <body>
@@ -204,6 +212,8 @@
 
       <div id="offline-days"></div>
     </div>
+
+    <button id="notify-button" hidden>🔔 Bildirimleri aç</button>
 
     <script>
       const APP_URL =
@@ -429,6 +439,72 @@
           writeStorage(STORAGE_KEY, { events: event.data.events, savedAt: event.data.savedAt });
         }
       });
+
+      // ---- PC bildirimleri ----
+      // Telefonda/tablette bildirimleri Google Takvim uygulaması gönderir; orada iki kez gelmesin diye bu kısım çalışmaz.
+      // PC'de uygulama penceresi açıkken (küçültülmüş olabilir) kayıtlı 2 haftalık kopyadaki etkinlikler için
+      // Windows bildirimi gösterir. Her etkinliğin "reminder" alanı kaç dakika önce bildirileceğidir.
+      const NOTIFIED_KEY = "takvim-notified"; // bildirimi gösterilmiş etkinlikler (aynısı iki kez gelmesin)
+      const CHECK_EVERY_MS = 30000;
+      // Bilgisayar uykudan uyanınca bu kadar geç kalmış bildirimler yine gösterilir, daha eskileri atlanır
+      const LATE_LIMIT_MS = 5 * 60 * 1000;
+
+      const notifyButton = document.getElementById("notify-button");
+      const isPhoneOrTablet = /Android|iPhone|iPad/i.test(navigator.userAgent);
+
+      function eventStart(event) {
+        const [hour, minute] = event.time.split(":").map(Number);
+        const start = fromDateText(event.start);
+        start.setHours(hour, minute);
+        return start;
+      }
+
+      function showNotification(event) {
+        const body = event.time + "–" + (event.endsLater ? "…" : event.endTime) + (event.location ? "
+" + event.location : "");
+        const notification = new Notification(event.title, { body: body, icon: "icon-192.png", tag: event.start + event.time + event.title });
+        notification.addEventListener("click", () => window.focus());
+      }
+
+      function checkNotifications() {
+        if (Notification.permission !== "granted") return;
+        const copy = readStorage(STORAGE_KEY, null);
+        if (!copy) return;
+        const now = Date.now();
+        const notified = readStorage(NOTIFIED_KEY, {});
+
+        for (const event of copy.events) {
+          if (event.allDay || event.reminder === null || event.reminder === undefined) continue;
+          const key = event.start + " " + event.time + " " + event.title;
+          const notifyAt = eventStart(event).getTime() - event.reminder * 60 * 1000;
+          if (notified[key] || notifyAt > now || now - notifyAt > LATE_LIMIT_MS) continue;
+          showNotification(event);
+          notified[key] = notifyAt;
+        }
+
+        // Bir günden eski kayıtları temizle
+        for (const key in notified) {
+          if (now - notified[key] > 24 * 60 * 60 * 1000) delete notified[key];
+        }
+        writeStorage(NOTIFIED_KEY, notified);
+      }
+
+      function updateNotifyButton() {
+        notifyButton.hidden = Notification.permission !== "default";
+      }
+
+      if (!isPhoneOrTablet && "Notification" in window) {
+        notifyButton.addEventListener("click", async () => {
+          await Notification.requestPermission();
+          updateNotifyButton();
+          if (Notification.permission === "granted") {
+            new Notification("Takvim", { body: "Bildirimler açık. Etkinlik saatlerinde burada haber vereceğim.", icon: "icon-192.png" });
+          }
+        });
+        updateNotifyButton();
+        setInterval(checkNotifications, CHECK_EVERY_MS);
+        checkNotifications();
+      }
 
       window.addEventListener("offline", showOfflineView);
       window.addEventListener("online", showCalendar);
